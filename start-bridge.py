@@ -1,5 +1,6 @@
 import socket
 import requests
+import time
 
 HOST = "0.0.0.0"
 PORT = 10001
@@ -8,7 +9,7 @@ ALPACA = "http://127.0.0.1:5555"
 DEVICE = 1
 
 CLIENT_ID = 1
-TX = 1
+TX = 0
 
 target_ra = None
 target_dec = None
@@ -19,96 +20,163 @@ target_dec = None
 # -----------------------------
 
 def alpaca_get(endpoint):
+
     global TX
     TX += 1
 
-    r = requests.get(
-        f"{ALPACA}{endpoint}",
-        params={
-            "ClientID": CLIENT_ID,
-            "ClientTransactionID": TX
-        },
-        timeout=5
-    )
+    try:
 
-    return r.json()["Value"]
+        r = requests.get(
+            f"{ALPACA}{endpoint}",
+            params={
+                "ClientID": CLIENT_ID,
+                "ClientTransactionID": TX
+            },
+            timeout=5
+        )
+
+        return r.json()["Value"]
+
+    except Exception as e:
+
+        print("ALPACA GET ERROR:", e)
+        return None
 
 
-def alpaca_put(endpoint, data):
+def alpaca_put(endpoint, payload):
+
     global TX
     TX += 1
 
-    payload = data | {
+    payload |= {
         "ClientID": CLIENT_ID,
         "ClientTransactionID": TX
     }
 
-    r = requests.put(
-        f"{ALPACA}{endpoint}",
-        data=payload,
-        timeout=5
-    )
+    try:
 
-    print("ALPACA:", r.text)
+        r = requests.put(
+            f"{ALPACA}{endpoint}",
+            data=payload,
+            timeout=5
+        )
+
+        print("ALPACA:", r.text)
+
+    except Exception as e:
+
+        print("ALPACA PUT ERROR:", e)
 
 
 # -----------------------------
-# Coordinate conversion
+# Coordinate helpers
 # -----------------------------
 
 def ra_to_hours(ra):
+
     h, m, s = map(float, ra.split(":"))
     return h + m/60 + s/3600
 
 
 def dec_to_deg(dec):
+
     dec = dec.replace("*", ":")
     sign = -1 if dec.startswith("-") else 1
+
     dec = dec.replace("+", "").replace("-", "")
+
     d, m, s = map(float, dec.split(":"))
+
     return sign * (d + m/60 + s/3600)
 
 
 def hours_to_ra(hours):
+
+    if hours is None:
+        return b"00:00:00#"
+
     h = int(hours)
-    m = int((hours - h) * 60)
-    s = int(((hours - h) * 60 - m) * 60)
-    return f"{h:02}:{m:02}:{s:02}#"
+    m = int((hours-h)*60)
+    s = int(((hours-h)*60-m)*60)
+
+    return f"{h:02}:{m:02}:{s:02}#".encode()
 
 
 def deg_to_dec(deg):
+
+    if deg is None:
+        return b"+00*00:00#"
+
     sign = "+" if deg >= 0 else "-"
+
     deg = abs(deg)
+
     d = int(deg)
-    m = int((deg - d) * 60)
-    s = int(((deg - d) * 60 - m) * 60)
-    return f"{sign}{d:02}*{m:02}:{s:02}#"
+    m = int((deg-d)*60)
+    s = int(((deg-d)*60-m)*60)
+
+    return f"{sign}{d:02}*{m:02}:{s:02}#".encode()
+
+
+# -----------------------------
+# Mount helpers
+# -----------------------------
+
+def ensure_unparked():
+
+    try:
+
+        parked = alpaca_get(
+            f"/api/v1/telescope/{DEVICE}/atpark"
+        )
+
+        if parked:
+
+            print("Mount parked → unparking")
+
+            alpaca_put(
+                f"/api/v1/telescope/{DEVICE}/unpark",
+                {}
+            )
+
+            time.sleep(2)
+
+    except Exception as e:
+
+        print("UNPARK ERROR:", e)
 
 
 # -----------------------------
 # Slew telescope
 # -----------------------------
 
-def slew_seestar(ra, dec):
+def slew():
+
+    global target_ra, target_dec
+
+    if not target_ra or not target_dec:
+        return
+
+    ensure_unparked()
 
     try:
 
-        ra_hours = ra_to_hours(ra)
-        dec_deg = dec_to_deg(dec)
+        ra = ra_to_hours(target_ra)
+        dec = dec_to_deg(target_dec)
 
-        print("SLEW:", ra_hours, dec_deg)
+        print("SLEW:", ra, dec)
 
         alpaca_put(
             f"/api/v1/telescope/{DEVICE}/slewtocoordinates",
             {
-                "RightAscension": ra_hours,
-                "Declination": dec_deg
+                "RightAscension": ra,
+                "Declination": dec
             }
         )
 
     except Exception as e:
 
-        print("Slew failed:", e)
+        print("SLEW ERROR:", e)
 
 
 # -----------------------------
@@ -132,200 +200,105 @@ while True:
 
     buffer = b""
 
-    while True:
+    try:
 
-        data = conn.recv(1024)
+        while True:
 
-        if not data:
-            break
+            data = conn.recv(1024)
 
-        print("RAW:", data)
+            if not data:
+                break
 
-        # LX200 ACK probe
-        if b"\x06" in data:
-            conn.sendall(b"A")
-            continue
+            print("RAW:", data)
 
-        # Stellarium alignment probe
-        if data.startswith(b"Ka"):
-            conn.sendall(b"1")
-            continue
-
-        buffer += data
-
-        while b"#" in buffer:
-
-            cmd, buffer = buffer.split(b"#", 1)
-
-            cmd = cmd.decode(errors="ignore")
-            cmd = cmd.replace("\n","").replace("\r","").strip()
-            cmd = cmd.lstrip("#")
-
-            if not cmd:
+            # LX200 ACK probe
+            if b"\x06" in data:
+                conn.sendall(b"A")
                 continue
 
-            print("LX200:", cmd)
-
-            # -----------------------------
-            # Get RA
-            # -----------------------------
-
-            if cmd == ":GR":
-
-                ra = alpaca_get(
-                    f"/api/v1/telescope/{DEVICE}/rightascension"
-                )
-
-                conn.sendall(hours_to_ra(ra).encode())
-
-            # -----------------------------
-            # Get DEC
-            # -----------------------------
-
-            elif cmd == ":GD":
-
-                dec = alpaca_get(
-                    f"/api/v1/telescope/{DEVICE}/declination"
-                )
-
-                conn.sendall(deg_to_dec(dec).encode())
-
-            # -----------------------------
-            # Distance query
-            # -----------------------------
-
-            elif cmd == ":D":
-
-                conn.sendall(b"0#")
-
-            # -----------------------------
-            # Sync command
-            # -----------------------------
-
-            elif cmd == ":CM":
-
-                conn.sendall(b"1#")
-
-            # -----------------------------
-            # Stellarium capability queries
-            # -----------------------------
-
-            elif cmd == ":GG":
-                conn.sendall(b"00#")
-
-            elif cmd == ":GW":
-                conn.sendall(b"0#")
-
-            elif cmd == ":GVD":
-                conn.sendall(b"1.0#")
-
-            elif cmd == ":GVT":
-                conn.sendall(b"Seestar#")
-
-            # -----------------------------
-            # Time
-            # -----------------------------
-
-            elif cmd == ":GL":
-
-                conn.sendall(b"12:00:00#")
-
-            # -----------------------------
-            # Date
-            # -----------------------------
-
-            elif cmd == ":GC":
-
-                conn.sendall(b"01/01/24#")
-
-            # -----------------------------
-            # Product name
-            # -----------------------------
-
-            elif cmd == ":GVP":
-
-                conn.sendall(b"SeestarBridge#")
-
-            # -----------------------------
-            # Firmware version
-            # -----------------------------
-
-            elif cmd == ":GVN":
-
-                conn.sendall(b"1.0#")
-
-            # -----------------------------
-            # Longitude
-            # -----------------------------
-
-            elif cmd == ":Gg":
-
-                conn.sendall(b"-076*30:00#")
-
-            # -----------------------------
-            # Latitude
-            # -----------------------------
-
-            elif cmd == ":Gt":
-
-                conn.sendall(b"+38*30:00#")
-
-            # -----------------------------
-            # Set RA
-            # -----------------------------
-
-            elif cmd.startswith(":Sr"):
-
-                target_ra = cmd[3:]
-
-                print("RA set:", target_ra)
-
+            # Stellarium probe
+            if data.startswith(b"Ka"):
                 conn.sendall(b"1")
+                continue
 
-            # -----------------------------
-            # Set DEC
-            # -----------------------------
+            buffer += data
 
-            elif cmd.startswith(":Sd"):
+            while b"#" in buffer:
 
-                target_dec = cmd[3:]
+                cmd, buffer = buffer.split(b"#", 1)
 
-                print("DEC set:", target_dec)
+                cmd = cmd.decode(errors="ignore").strip()
 
-                conn.sendall(b"1")
+                if not cmd:
+                    continue
 
-            # -----------------------------
-            # Slew command
-            # -----------------------------
+                print("LX200:", cmd)
 
-            elif cmd == ":MS":
+                # Get RA
+                if cmd == ":GR":
 
-                print("SLEW command received")
+                    ra = alpaca_get(
+                        f"/api/v1/telescope/{DEVICE}/rightascension"
+                    )
 
-                if target_ra and target_dec:
-                    slew_seestar(target_ra, target_dec)
+                    conn.sendall(hours_to_ra(ra))
 
-                conn.sendall(b"0")
+                # Get DEC
+                elif cmd == ":GD":
 
-            # -----------------------------
-            # Abort slew
-            # -----------------------------
+                    dec = alpaca_get(
+                        f"/api/v1/telescope/{DEVICE}/declination"
+                    )
 
-            elif cmd.startswith(":Q"):
+                    conn.sendall(deg_to_dec(dec))
 
-                print("STOP command")
+                # Set RA
+                elif cmd.startswith(":Sr"):
 
-                alpaca_put(
-                    f"/api/v1/telescope/{DEVICE}/abortslew",
-                    {}
-                )
+                    target_ra = cmd[3:]
 
-                conn.sendall(b"1")
+                    print("RA set:", target_ra)
 
-            else:
+                    conn.sendall(b"1")
 
-                print("UNKNOWN COMMAND:", cmd)
+                # Set DEC
+                elif cmd.startswith(":Sd"):
 
-                conn.sendall(b"1")
+                    target_dec = cmd[3:]
 
-    conn.close()
+                    print("DEC set:", target_dec)
+
+                    conn.sendall(b"1")
+
+                # Slew
+                elif cmd == ":MS":
+
+                    print("SLEW command received")
+
+                    slew()
+
+                    conn.sendall(b"0")
+
+                # Abort slew
+                elif cmd.startswith(":Q"):
+
+                    alpaca_put(
+                        f"/api/v1/telescope/{DEVICE}/abortslew",
+                        {}
+                    )
+
+                    conn.sendall(b"1")
+
+                else:
+
+                    conn.sendall(b"1")
+
+    except Exception as e:
+
+        print("CLIENT ERROR:", e)
+
+    finally:
+
+        conn.close()
+
+        print("Client disconnected")
