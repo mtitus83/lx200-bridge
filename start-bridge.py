@@ -2,6 +2,7 @@ import socket
 import requests
 import time
 import math
+import threading
 
 HOST = "0.0.0.0"
 PORT = 10001
@@ -9,13 +10,16 @@ PORT = 10001
 ALPACA = "http://127.0.0.1:5555"
 DEVICE = 1
 
-STELLARIUM = "http://127.0.0.1:8090"
+STELLARIUM = "http://10.255.8.93:8090"
 
 CLIENT_ID = 1
 TX = 0
 
 target_ra = None
 target_dec = None
+
+last_ra = None
+last_dec = None
 
 
 # -----------------------------
@@ -35,7 +39,7 @@ def alpaca_get(endpoint):
                 "ClientID": CLIENT_ID,
                 "ClientTransactionID": TX
             },
-            timeout=5
+            timeout=3
         )
 
         return r.json()["Value"]
@@ -72,7 +76,7 @@ def alpaca_put(endpoint, payload):
 
 
 # -----------------------------
-# Stellarium helpers
+# Stellarium control
 # -----------------------------
 
 def update_stellarium(ra_hours, dec_deg):
@@ -82,7 +86,6 @@ def update_stellarium(ra_hours, dec_deg):
         ra_rad = ra_hours * math.pi / 12
         dec_rad = dec_deg * math.pi / 180
 
-        # move view
         requests.post(
             f"{STELLARIUM}/api/main/view",
             data={
@@ -91,26 +94,45 @@ def update_stellarium(ra_hours, dec_deg):
             timeout=2
         )
 
-        # select nearest object
-        requests.post(
-            f"{STELLARIUM}/api/main/search",
-            data={
-                "j2000": f"[{ra_rad},{dec_rad},1]"
-            },
-            timeout=2
-        )
-
-        # center camera
-        requests.post(
-            f"{STELLARIUM}/api/main/focus",
-            timeout=2
-        )
-
-        print("Stellarium synced")
-
     except Exception as e:
 
         print("STELLARIUM UPDATE ERROR:", e)
+
+
+# -----------------------------
+# Live tracking thread
+# -----------------------------
+
+def stellarium_tracker():
+
+    global last_ra, last_dec
+
+    while True:
+
+        try:
+
+            ra = alpaca_get(
+                f"/api/v1/telescope/{DEVICE}/rightascension"
+            )
+
+            dec = alpaca_get(
+                f"/api/v1/telescope/{DEVICE}/declination"
+            )
+
+            if ra is not None and dec is not None:
+
+                if ra != last_ra or dec != last_dec:
+
+                    update_stellarium(ra, dec)
+
+                    last_ra = ra
+                    last_dec = dec
+
+        except Exception as e:
+
+            print("TRACK ERROR:", e)
+
+        time.sleep(1)
 
 
 # -----------------------------
@@ -192,7 +214,7 @@ def ensure_unparked():
 
 
 # -----------------------------
-# Slew telescope
+# Slew telescope safely
 # -----------------------------
 
 def slew():
@@ -205,6 +227,14 @@ def slew():
     ensure_unparked()
 
     try:
+
+        # clear stale slews
+        alpaca_put(
+            f"/api/v1/telescope/{DEVICE}/abortslew",
+            {}
+        )
+
+        time.sleep(0.5)
 
         ra = ra_to_hours(target_ra)
         dec = dec_to_deg(target_dec)
@@ -219,15 +249,23 @@ def slew():
             }
         )
 
-        update_stellarium(ra, dec)
-
     except Exception as e:
 
         print("SLEW ERROR:", e)
 
 
 # -----------------------------
-# Start server
+# Start tracking thread
+# -----------------------------
+
+threading.Thread(
+    target=stellarium_tracker,
+    daemon=True
+).start()
+
+
+# -----------------------------
+# LX200 server
 # -----------------------------
 
 print(f"LX200 bridge listening on {PORT}")
@@ -256,14 +294,10 @@ while True:
             if not data:
                 break
 
-            print("RAW:", data)
-
-            # LX200 ACK probe
             if b"\x06" in data:
                 conn.sendall(b"A")
                 continue
 
-            # Stellarium probe
             if data.startswith(b"Ka"):
                 conn.sendall(b"1")
                 continue
@@ -281,7 +315,6 @@ while True:
 
                 print("LX200:", cmd)
 
-                # Get RA
                 if cmd == ":GR":
 
                     ra = alpaca_get(
@@ -290,7 +323,6 @@ while True:
 
                     conn.sendall(hours_to_ra(ra))
 
-                # Get DEC
                 elif cmd == ":GD":
 
                     dec = alpaca_get(
@@ -299,25 +331,16 @@ while True:
 
                     conn.sendall(deg_to_dec(dec))
 
-                # Set RA
                 elif cmd.startswith(":Sr"):
 
                     target_ra = cmd[3:]
-
-                    print("RA set:", target_ra)
-
                     conn.sendall(b"1")
 
-                # Set DEC
                 elif cmd.startswith(":Sd"):
 
                     target_dec = cmd[3:]
-
-                    print("DEC set:", target_dec)
-
                     conn.sendall(b"1")
 
-                # Slew
                 elif cmd == ":MS":
 
                     print("SLEW command received")
@@ -326,7 +349,6 @@ while True:
 
                     conn.sendall(b"0")
 
-                # Abort slew
                 elif cmd.startswith(":Q"):
 
                     alpaca_put(
@@ -347,5 +369,4 @@ while True:
     finally:
 
         conn.close()
-
         print("Client disconnected")
