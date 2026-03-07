@@ -1,12 +1,15 @@
 import socket
 import requests
 import time
+import math
 
 HOST = "0.0.0.0"
 PORT = 10001
 
 ALPACA = "http://127.0.0.1:5555"
 DEVICE = 1
+
+STELLARIUM = "http://127.0.0.1:8090"
 
 CLIENT_ID = 1
 TX = 0
@@ -66,6 +69,48 @@ def alpaca_put(endpoint, payload):
     except Exception as e:
 
         print("ALPACA PUT ERROR:", e)
+
+
+# -----------------------------
+# Stellarium helpers
+# -----------------------------
+
+def update_stellarium(ra_hours, dec_deg):
+
+    try:
+
+        ra_rad = ra_hours * math.pi / 12
+        dec_rad = dec_deg * math.pi / 180
+
+        # move view
+        requests.post(
+            f"{STELLARIUM}/api/main/view",
+            data={
+                "j2000": f"[{ra_rad},{dec_rad},1]"
+            },
+            timeout=2
+        )
+
+        # select nearest object
+        requests.post(
+            f"{STELLARIUM}/api/main/search",
+            data={
+                "j2000": f"[{ra_rad},{dec_rad},1]"
+            },
+            timeout=2
+        )
+
+        # center camera
+        requests.post(
+            f"{STELLARIUM}/api/main/focus",
+            timeout=2
+        )
+
+        print("Stellarium synced")
+
+    except Exception as e:
+
+        print("STELLARIUM UPDATE ERROR:", e)
 
 
 # -----------------------------
@@ -173,6 +218,8 @@ def slew():
                 "Declination": dec
             }
         )
+
+        update_stellarium(ra, dec)
 
     except Exception as e:
 
