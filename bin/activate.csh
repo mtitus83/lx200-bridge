@@ -9,7 +9,7 @@ alias deactivate 'test $?_OLD_VIRTUAL_PATH != 0 && setenv PATH "$_OLD_VIRTUAL_PA
 # Unset irrelevant variables.
 deactivate nondestructive
 
-setenv VIRTUAL_ENV /home/mtitus/git-repo/stellarium-mobile-lx200-bridge
+setenv VIRTUAL_ENV /home/mtitus/git-repo/lx200-bridge
 
 set _OLD_VIRTUAL_PATH="$PATH"
 setenv PATH "$VIRTUAL_ENV/"bin":$PATH"
@@ -18,8 +18,8 @@ setenv PATH "$VIRTUAL_ENV/"bin":$PATH"
 set _OLD_VIRTUAL_PROMPT="$prompt"
 
 if (! "$?VIRTUAL_ENV_DISABLE_PROMPT") then
-    set prompt = '(stellarium-mobile-lx200-bridge) '"$prompt"
-    setenv VIRTUAL_ENV_PROMPT '(stellarium-mobile-lx200-bridge) '
+    set prompt = '(lx200-bridge) '"$prompt"
+    setenv VIRTUAL_ENV_PROMPT '(lx200-bridge) '
 endif
 
 alias pydoc python -m pydoc

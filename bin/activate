@@ -39,10 +39,10 @@ deactivate nondestructive
 if [ "${OSTYPE:-}" = "cygwin" ] || [ "${OSTYPE:-}" = "msys" ] ; then
     # transform D:\path\to\venv to /d/path/to/venv on MSYS
     # and to /cygdrive/d/path/to/venv on Cygwin
-    export VIRTUAL_ENV=$(cygpath /home/mtitus/git-repo/stellarium-mobile-lx200-bridge)
+    export VIRTUAL_ENV=$(cygpath /home/mtitus/git-repo/lx200-bridge)
 else
     # use the path as-is
-    export VIRTUAL_ENV=/home/mtitus/git-repo/stellarium-mobile-lx200-bridge
+    export VIRTUAL_ENV=/home/mtitus/git-repo/lx200-bridge
 fi
 
 _OLD_VIRTUAL_PATH="$PATH"
@@ -59,9 +59,9 @@ fi
 
 if [ -z "${VIRTUAL_ENV_DISABLE_PROMPT:-}" ] ; then
     _OLD_VIRTUAL_PS1="${PS1:-}"
-    PS1='(stellarium-mobile-lx200-bridge) '"${PS1:-}"
+    PS1='(lx200-bridge) '"${PS1:-}"
     export PS1
-    VIRTUAL_ENV_PROMPT='(stellarium-mobile-lx200-bridge) '
+    VIRTUAL_ENV_PROMPT='(lx200-bridge) '
     export VIRTUAL_ENV_PROMPT
 fi
 
