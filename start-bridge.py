@@ -10,7 +10,7 @@ PORT = 10001
 ALPACA = "http://127.0.0.1:5555"
 DEVICE = 1
 
-STELLARIUM = "http://10.255.8.93:8090"
+STELLARIUM = "http://localhost:8090"
 
 CLIENT_ID = 1
 TX = 0
@@ -32,7 +32,6 @@ def alpaca_get(endpoint):
     TX += 1
 
     try:
-
         r = requests.get(
             f"{ALPACA}{endpoint}",
             params={
@@ -42,10 +41,17 @@ def alpaca_get(endpoint):
             timeout=3
         )
 
-        return r.json()["Value"]
+        data = r.json()
+
+        if data.get("ErrorNumber", 0) != 0:
+            msg = data.get("ErrorMessage")
+            if msg != "Not Connected":
+                print("ALPACA ERROR:", msg)
+            return None
+
+        return data.get("Value")
 
     except Exception as e:
-
         print("ALPACA GET ERROR:", e)
         return None
 
@@ -61,22 +67,25 @@ def alpaca_put(endpoint, payload):
     }
 
     try:
-
         r = requests.put(
             f"{ALPACA}{endpoint}",
             data=payload,
             timeout=5
         )
 
-        print("ALPACA:", r.text)
+        data = r.json()
+
+        if data.get("ErrorNumber", 0) != 0:
+            print("ALPACA PUT ERROR:", data.get("ErrorMessage"))
+        else:
+            print("ALPACA OK:", endpoint)
 
     except Exception as e:
-
         print("ALPACA PUT ERROR:", e)
 
 
 # -----------------------------
-# Stellarium control
+# Stellarium view update
 # -----------------------------
 
 def update_stellarium(ra_hours, dec_deg):
@@ -95,12 +104,11 @@ def update_stellarium(ra_hours, dec_deg):
         )
 
     except Exception as e:
-
         print("STELLARIUM UPDATE ERROR:", e)
 
 
 # -----------------------------
-# Live tracking thread
+# Tracking thread
 # -----------------------------
 
 def stellarium_tracker():
@@ -110,6 +118,14 @@ def stellarium_tracker():
     while True:
 
         try:
+
+            connected = alpaca_get(
+                f"/api/v1/telescope/{DEVICE}/connected"
+            )
+
+            if not connected:
+                time.sleep(1)
+                continue
 
             ra = alpaca_get(
                 f"/api/v1/telescope/{DEVICE}/rightascension"
@@ -129,10 +145,9 @@ def stellarium_tracker():
                     last_dec = dec
 
         except Exception as e:
-
             print("TRACK ERROR:", e)
 
-        time.sleep(1)
+        time.sleep(0.3)
 
 
 # -----------------------------
@@ -206,32 +221,38 @@ def ensure_unparked():
                 {}
             )
 
-            time.sleep(2)
+            time.sleep(3)
 
     except Exception as e:
-
         print("UNPARK ERROR:", e)
 
 
 # -----------------------------
-# Slew telescope safely
+# Slew telescope
 # -----------------------------
 
 def slew():
 
     global target_ra, target_dec
 
-    if not target_ra or not target_dec:
+    if target_ra is None or target_dec is None:
+        print("SLEW skipped (missing coords)")
         return
 
     ensure_unparked()
 
     try:
 
-        # clear stale slews
         alpaca_put(
             f"/api/v1/telescope/{DEVICE}/abortslew",
             {}
+        )
+
+        time.sleep(1)
+
+        alpaca_put(
+            f"/api/v1/telescope/{DEVICE}/tracking",
+            {"Tracking": True}
         )
 
         time.sleep(0.5)
@@ -244,13 +265,12 @@ def slew():
         alpaca_put(
             f"/api/v1/telescope/{DEVICE}/slewtocoordinates",
             {
-                "RightAscension": ra,
-                "Declination": dec
+                "RightAscension": float(ra),
+                "Declination": float(dec)
             }
         )
 
     except Exception as e:
-
         print("SLEW ERROR:", e)
 
 
@@ -334,18 +354,23 @@ while True:
                 elif cmd.startswith(":Sr"):
 
                     target_ra = cmd[3:]
+                    print("RA set:", target_ra)
                     conn.sendall(b"1")
 
                 elif cmd.startswith(":Sd"):
 
                     target_dec = cmd[3:]
+                    print("DEC set:", target_dec)
                     conn.sendall(b"1")
 
                 elif cmd == ":MS":
 
                     print("SLEW command received")
 
-                    slew()
+                    if target_ra and target_dec:
+                        slew()
+                    else:
+                        print("SLEW ignored (coords incomplete)")
 
                     conn.sendall(b"0")
 
