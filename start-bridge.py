@@ -32,6 +32,7 @@ def alpaca_get(endpoint):
     TX += 1
 
     try:
+
         r = requests.get(
             f"{ALPACA}{endpoint}",
             params={
@@ -41,17 +42,10 @@ def alpaca_get(endpoint):
             timeout=3
         )
 
-        data = r.json()
-
-        if data.get("ErrorNumber", 0) != 0:
-            msg = data.get("ErrorMessage")
-            if msg != "Not Connected":
-                print("ALPACA ERROR:", msg)
-            return None
-
-        return data.get("Value")
+        return r.json()["Value"]
 
     except Exception as e:
+
         print("ALPACA GET ERROR:", e)
         return None
 
@@ -67,25 +61,22 @@ def alpaca_put(endpoint, payload):
     }
 
     try:
+
         r = requests.put(
             f"{ALPACA}{endpoint}",
             data=payload,
             timeout=5
         )
 
-        data = r.json()
-
-        if data.get("ErrorNumber", 0) != 0:
-            print("ALPACA PUT ERROR:", data.get("ErrorMessage"))
-        else:
-            print("ALPACA OK:", endpoint)
+        print("ALPACA:", r.text)
 
     except Exception as e:
+
         print("ALPACA PUT ERROR:", e)
 
 
 # -----------------------------
-# Stellarium view update
+# Stellarium control
 # -----------------------------
 
 def update_stellarium(ra_hours, dec_deg):
@@ -104,11 +95,12 @@ def update_stellarium(ra_hours, dec_deg):
         )
 
     except Exception as e:
+
         print("STELLARIUM UPDATE ERROR:", e)
 
 
 # -----------------------------
-# Tracking thread
+# Live tracking thread
 # -----------------------------
 
 def stellarium_tracker():
@@ -118,14 +110,6 @@ def stellarium_tracker():
     while True:
 
         try:
-
-            connected = alpaca_get(
-                f"/api/v1/telescope/{DEVICE}/connected"
-            )
-
-            if not connected:
-                time.sleep(1)
-                continue
 
             ra = alpaca_get(
                 f"/api/v1/telescope/{DEVICE}/rightascension"
@@ -145,9 +129,10 @@ def stellarium_tracker():
                     last_dec = dec
 
         except Exception as e:
+
             print("TRACK ERROR:", e)
 
-        time.sleep(0.3)
+        time.sleep(1)
 
 
 # -----------------------------
@@ -221,41 +206,77 @@ def ensure_unparked():
                 {}
             )
 
-            time.sleep(3)
+            time.sleep(2)
 
     except Exception as e:
+
         print("UNPARK ERROR:", e)
 
 
+def ensure_tracking():
+
+    try:
+
+        tracking = alpaca_get(
+            f"/api/v1/telescope/{DEVICE}/tracking"
+        )
+
+        if not tracking:
+
+            print("Tracking disabled → enabling")
+
+            alpaca_put(
+                f"/api/v1/telescope/{DEVICE}/tracking",
+                {"Tracking": True}
+            )
+
+            time.sleep(1)
+
+    except Exception as e:
+
+        print("TRACKING ERROR:", e)
+
+
+def wait_for_slew_clear():
+
+    for _ in range(10):
+
+        slewing = alpaca_get(
+            f"/api/v1/telescope/{DEVICE}/slewing"
+        )
+
+        if not slewing:
+            return
+
+        print("Waiting for mount to finish slewing...")
+
+        time.sleep(0.5)
+
+
 # -----------------------------
-# Slew telescope
+# Slew telescope safely
 # -----------------------------
 
 def slew():
 
     global target_ra, target_dec
 
-    if target_ra is None or target_dec is None:
-        print("SLEW skipped (missing coords)")
+    if not target_ra or not target_dec:
         return
 
     ensure_unparked()
+    ensure_tracking()
 
     try:
+
+        print("Clearing stale slews")
 
         alpaca_put(
             f"/api/v1/telescope/{DEVICE}/abortslew",
             {}
         )
 
-        time.sleep(1)
-
-        alpaca_put(
-            f"/api/v1/telescope/{DEVICE}/tracking",
-            {"Tracking": True}
-        )
-
-        time.sleep(0.5)
+        wait_for_slew_clear()
 
         ra = ra_to_hours(target_ra)
         dec = dec_to_deg(target_dec)
@@ -265,12 +286,13 @@ def slew():
         alpaca_put(
             f"/api/v1/telescope/{DEVICE}/slewtocoordinates",
             {
-                "RightAscension": float(ra),
-                "Declination": float(dec)
+                "RightAscension": ra,
+                "Declination": dec
             }
         )
 
     except Exception as e:
+
         print("SLEW ERROR:", e)
 
 
@@ -354,27 +376,24 @@ while True:
                 elif cmd.startswith(":Sr"):
 
                     target_ra = cmd[3:]
-                    print("RA set:", target_ra)
                     conn.sendall(b"1")
 
                 elif cmd.startswith(":Sd"):
 
                     target_dec = cmd[3:]
-                    print("DEC set:", target_dec)
                     conn.sendall(b"1")
 
                 elif cmd == ":MS":
 
                     print("SLEW command received")
 
-                    if target_ra and target_dec:
-                        slew()
-                    else:
-                        print("SLEW ignored (coords incomplete)")
+                    slew()
 
                     conn.sendall(b"0")
 
                 elif cmd.startswith(":Q"):
+
+                    print("Abort command received")
 
                     alpaca_put(
                         f"/api/v1/telescope/{DEVICE}/abortslew",
