@@ -39,10 +39,10 @@ def alpaca_get(endpoint):
                 "ClientID": CLIENT_ID,
                 "ClientTransactionID": TX
             },
-            timeout=3
+            timeout=1
         )
 
-        return r.json()["Value"]
+        return r.json().get("Value")
 
     except Exception as e:
 
@@ -65,7 +65,7 @@ def alpaca_put(endpoint, payload):
         r = requests.put(
             f"{ALPACA}{endpoint}",
             data=payload,
-            timeout=5
+            timeout=2
         )
 
         print("ALPACA:", r.text)
@@ -91,7 +91,7 @@ def update_stellarium(ra_hours, dec_deg):
             data={
                 "j2000": f"[{ra_rad},{dec_rad},1]"
             },
-            timeout=2
+            timeout=1
         )
 
     except Exception as e:
@@ -213,46 +213,6 @@ def ensure_unparked():
         print("UNPARK ERROR:", e)
 
 
-def ensure_tracking():
-
-    try:
-
-        tracking = alpaca_get(
-            f"/api/v1/telescope/{DEVICE}/tracking"
-        )
-
-        if not tracking:
-
-            print("Tracking disabled → enabling")
-
-            alpaca_put(
-                f"/api/v1/telescope/{DEVICE}/tracking",
-                {"Tracking": True}
-            )
-
-            time.sleep(1)
-
-    except Exception as e:
-
-        print("TRACKING ERROR:", e)
-
-
-def wait_for_slew_clear():
-
-    for _ in range(10):
-
-        slewing = alpaca_get(
-            f"/api/v1/telescope/{DEVICE}/slewing"
-        )
-
-        if not slewing:
-            return
-
-        print("Waiting for mount to finish slewing...")
-
-        time.sleep(0.5)
-
-
 # -----------------------------
 # Slew telescope safely
 # -----------------------------
@@ -265,18 +225,15 @@ def slew():
         return
 
     ensure_unparked()
-    ensure_tracking()
 
     try:
-
-        print("Clearing stale slews")
 
         alpaca_put(
             f"/api/v1/telescope/{DEVICE}/abortslew",
             {}
         )
 
-        wait_for_slew_clear()
+        time.sleep(0.5)
 
         ra = ra_to_hours(target_ra)
         dec = dec_to_deg(target_dec)
@@ -297,16 +254,6 @@ def slew():
 
 
 # -----------------------------
-# Start tracking thread
-# -----------------------------
-
-threading.Thread(
-    target=stellarium_tracker,
-    daemon=True
-).start()
-
-
-# -----------------------------
 # LX200 server
 # -----------------------------
 
@@ -317,11 +264,23 @@ server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
 server.bind((HOST, PORT))
 server.listen(5)
+server.settimeout(5)
+
+# Start tracker AFTER server is ready
+threading.Thread(
+    target=stellarium_tracker,
+    daemon=True
+).start()
 
 
 while True:
 
-    conn, addr = server.accept()
+    try:
+
+        conn, addr = server.accept()
+
+    except socket.timeout:
+        continue
 
     print("Client connected:", addr)
 
@@ -392,8 +351,6 @@ while True:
                     conn.sendall(b"0")
 
                 elif cmd.startswith(":Q"):
-
-                    print("Abort command received")
 
                     alpaca_put(
                         f"/api/v1/telescope/{DEVICE}/abortslew",
